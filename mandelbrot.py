@@ -16,22 +16,45 @@ Down-key to reduce max iters by a factor of 10.
 
 Press R to toggle rectangle selection.
 
-TODO
-====
-
+Todo
+----
  - Optimise the algorithm. Very slow for max_iters of 1000.
 
  - Fix the annoying rectangle selection that persists after zoom.
 
+Notes
+-----
+
+Parallel impact was massive.
+Tests in Ryzes 7 2700 8 cores, 16 threads CPU @ 3.3 GHz
+
+Naive single thread implementation took 25s.
+Multithreaded implementation:
+    Threads   Time [s]
+       1        26
+       8         8.5
+      16         5.2
+      64         2.5
+     128         2.4
+     256         2.4
+     512         Crash! Too many open files.
+
+
 @author: rarossi
 """
+import sys
+import time
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import RectangleSelector
 from matplotlib.backend_bases import MouseButton
+from multiprocessing import Pool, cpu_count, Array
 
 # Plot resolution, in pixels in x and y directions
-resolution = 400, 200
+if len(sys.argv) >= 3:
+    resolution = [int(d) for d in sys.argv[1:3]]
+else:
+    resolution = 1920, 1080
 
 # Centre and range of the plot, x and y
 centrex, centrey = 0, 0
@@ -43,16 +66,25 @@ rangex, rangey = 4, 2
 current_max_iters = 99
 
 
-def progbar(x, xi, xf, size=60, label='Progress:'):
-    done = int(round(size * (x - xi) / (xf - xi)))
-    if done == size:
-        print(' ' * (len(label) + size + 5), end='\r')
-    else:
-        rest = size - done
-        print('%s |%s>%s|' % (label, '='*done, '-'*rest), end='\r')
+# `thread_progress` is a shared memory for all threads to report progress.
+# It is initialised with zeros upon each call to `mandel()`.
+# `nprocs` is also shared as a constant to calculate progress.
+global thread_progress, nprocs
+if len(sys.argv) == 4:
+    nprocs = int(sys.argv[3])
+else:
+    nprocs = 8 * cpu_count()
 
 
 def onclick(event):
+    """
+    Handle mouse clicks:
+
+        - Zoom in upon double-left-click.
+
+        - Zoom out upon right click.
+
+    """
     global plotted_domain, selected_domain
 
     if event.button == 1 and event.dblclick:
@@ -60,6 +92,7 @@ def onclick(event):
 
     if event.button == 3:
         x1, x2, y1, y2 = plotted_domain
+        # TODO improve this zoom out logic
         selected_domain = np.array(
                 (x1 - 0.5, x2 + 0.5,
                  y1 - 0.5, y2 + 0.5))
@@ -67,7 +100,14 @@ def onclick(event):
 
 
 def line_select_callback(eclick, erelease):
-    'eclick and erelease are the press and release events'
+    """
+    Handle callbacks of RectangleSelector.
+
+    Set the global `selected_domain` to the selected rectangle.
+
+    `eclick` and `erelease` are the press and release events.
+    """
+
     x1, y1 = eclick.xdata, eclick.ydata
     x2, y2 = erelease.xdata, erelease.ydata
 
@@ -78,6 +118,19 @@ def line_select_callback(eclick, erelease):
 
 
 def toggle_selector(event):
+    """
+    Handle keyboard input.
+
+    Up:
+        Increase `max_iters` by factor of 2.
+
+    Down:
+        Decrease `max_iters` by factor of 10.
+
+    Rr:
+        Toggle rectangle selection.
+
+    """
     global current_max_iters, plotted_domain
     if event.key == 'up':
         current_max_iters *= 2
@@ -90,11 +143,43 @@ def toggle_selector(event):
         print('%sctivated rectangle selection.' % ('A' if toggle_selector.RS.active else 'Dea'))
 
 
-def mandel(domain=(-2.5, 1, -1, 1),  # x1, x2, y1, y2
-           resolution=(1920, 1080),
-           threshold=4,
-           max_iters=99,
-           ):
+def mandel_worker(arg_list):
+    """
+    Calculate Mandelbrot set for a part of the domain.
+
+    This is a worker function meant for parallel processing, hence called by
+    a `multiprocessing.Pool` in the function `mandel()`.
+
+    `arg_list` must contain a tuple:
+        domain, resolution, threshold, max_iters, thread_id
+
+    Where:
+        domain:
+            (x1, x2, y1, y2)
+
+
+        resolution:
+            (resolution_x, resolution_y)
+
+        threshold:
+            Threshold value for the Mandelbrot set algorithm.
+
+        max_iters:
+            Maximum number of interactions (bail out) for the algorithm.
+
+        thread_id:
+            Id of the thread, used to report progress.
+
+    Returns
+    -------
+    Grid of numbers to be plotted by `matplotlib.pyplot.imshow`.
+
+    """
+
+    global thread_progress, nprocs
+
+    domain, resolution, threshold, max_iters, thread_id = arg_list
+
     x = np.linspace(domain[0], domain[1], resolution[0])
     y = np.linspace(domain[2], domain[3], resolution[1])
 
@@ -111,13 +196,97 @@ def mandel(domain=(-2.5, 1, -1, 1),  # x1, x2, y1, y2
                 x1 = xtmp
                 i += 1
             x_count_iters.append(i)
-        progbar(y0, *domain[2:4])
+
         xy_count_iters.append(x_count_iters)
+
+        # Show progress
+        thread_progress[thread_id] = int(100 * (y0 - domain[2]) / (domain[3] - domain[2]))
+        print('%3.0f%%' % (sum(thread_progress)/nprocs), end='\r')
 
     return np.array(xy_count_iters)
 
 
+def mandel(domain=(-2.5, 1, -1, 1),  # x1, x2, y1, y2
+           resolution=(1920, 1080),
+           threshold=4,
+           max_iters=99,
+           ):
+    """
+    Parallel calculation of the Mandelbrot set
+
+    Parameters
+    ----------
+    domain : tuple (float, float, float, float), optional
+        Boundary of the domain (x1, x2, y1, y2).
+        The default is (-2.5, 1, -1, 1).
+
+    resolution : tuple (int, int), optional
+        Plot resolution x and y.
+        The default is (1920, 1080).
+
+    threshold : int, optional
+        Threshold value for the Mandelbrot set algorithm.
+        The default is 4.
+
+    max_iters : int, optional
+        Maximum number of interactions (bail out) for the algorithm.
+        The default is 99.
+
+    Returns
+    -------
+    numpy.array
+        Grid of numbers to be plotted by `matplotlib.pyplot.imshow`.
+
+    """
+
+    global thread_progress, nprocs
+    thread_progress = Array('i', [0] * nprocs)
+
+    # Divide domain and resolution y to run in parallel
+    x1, x2, y1, y2 = domain
+    resx, resy = resolution
+
+    delta_resy = resy // nprocs
+    remain_resy = resy % nprocs
+
+    chunks_resy = [(i+1)*delta_resy for i in range(nprocs)]
+    chunks_resy[-1] += remain_resy
+
+    chunks = []
+    pixel_start_y = 1
+    for i, pixel_end_y in enumerate(chunks_resy):
+        y1i = y1 + (y2 - y1) * pixel_start_y / resy
+        y2i = y1 + (y2 - y1) * pixel_end_y / resy
+        chunk = [(x1, x2, y1i, y2i),
+                 (resx, pixel_end_y - pixel_start_y + 1),
+                 threshold,
+                 max_iters,
+                 i,
+                 ]
+        chunks.append(chunk)
+        pixel_start_y = pixel_end_y + 1
+
+    pool = Pool(processes=nprocs)
+
+    t0 = time.time()
+    ret = pool.map(mandel_worker, chunks)
+    et = time.time() - t0
+
+    print('Update elapsed time %.3f s' % et)
+
+    return np.concatenate(ret)
+
+
 def update(domain):
+    """
+    Update the plot.
+
+    Parameters
+    ----------
+    domain :
+        See `mandel`.
+
+    """
     global plotted_domain
     plotted_domain = domain
     print('Max iters: {} Domain: {:8.3g} {:8.3g} {:8.3g}'.format(current_max_iters, *domain))
