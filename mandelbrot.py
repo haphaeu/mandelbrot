@@ -120,13 +120,13 @@ def line_select_callback(eclick, erelease):
     `eclick` and `erelease` are the press and release events.
     """
 
-    x1, y1 = eclick.xdata, eclick.ydata
-    x2, y2 = erelease.xdata, erelease.ydata
+    x1, x2 = sorted((eclick.xdata, erelease.xdata))
+    y1, y2 = sorted((eclick.ydata, erelease.ydata))
 
     if eclick.button == MouseButton.LEFT:
         global selected_domain
         selected_domain = np.array((x1, x2, y1, y2))
-        print('Selected: {:8.3g} {:8.3g} {:8.3g}'.format(*selected_domain), end='\r')
+        print('Selected: {:8.3g} {:8.3g} {:8.3g} {:8.3g}'.format(*selected_domain), end='\r')
 
 
 def toggle_selector(event):
@@ -300,9 +300,9 @@ def update(domain):
 
     global plotted_domain
     plotted_domain = domain
-    print('Max iters: {} Domain: {:8.3g} {:8.3g} {:8.3g}'.format(current_max_iters, *domain))
+    print('Max iters: {} Domain: {:8.3g} {:8.3g} {:8.3g} {:8.3g}'.format(current_max_iters, *domain))
     grid = mandel(resolution=resolution, domain=domain, max_iters=current_max_iters)
-    plt.imshow(grid, cmap=plt.cm.RdBu, interpolation='bilinear', extent=domain)
+    plt.imshow(grid, cmap=plt.cm.RdBu, interpolation='bilinear', origin='lower', extent=domain)
     plt.draw()
 
     et = time.time() - t0
