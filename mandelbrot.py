@@ -25,20 +25,28 @@ Todo
 Notes
 -----
 
-Parallel impact was massive.
-Tests in Ryzes 7 2700 8 cores, 16 threads CPU @ 3.3 GHz
+Parallel impact was massive, in Linux.
 
-Naive single thread implementation took 25s.
+Tests:
+    [1] Linux, Ryzen 7 2700 8 cores, 16 threads CPU @ 3.3 GHz
+    [2] Win10, Xeon E-2176M, 6 cores, 12 threads CPU @ 2.7 GHz
+
+Naive single thread implementation in [1] took 25s.
+
 Multithreaded implementation:
     Threads   Time [s]
-       1        26
-       8         8.5
-      16         5.2
-      64         2.5
-     128         2.4
-     256         2.4
-     512         Crash! Too many open files.
+               [1]     [2]
+       1        26      19
+       8        8.5     8.2
+      16        5.2     7.4
+      64        2.5     13
+     128        2.4     35
+     256        2.4     96**
+     512        *      256***
 
+* Crash - Too many open files.
+** win32api permission denied error after closing the plot.
+*** same as ** and system extremely slow when running.
 
 @author: rarossi
 """
@@ -66,10 +74,14 @@ rangex, rangey = 4, 2
 current_max_iters = 99
 
 
-# `thread_progress` is a shared memory for all threads to report progress.
-# It is initialised with zeros upon each call to `mandel()`.
+if sys.platform == 'linux':
+    # `thread_progress` is a shared memory for all threads to report progress.
+    # It is initialised with zeros upon each call to `mandel()`.
+    # Progress report only for linux since in windows it is a pain and inefficient.
+    global thread_progress
+
 # `nprocs` is also shared as a constant to calculate progress.
-global thread_progress, nprocs
+global nprocs
 if len(sys.argv) == 4:
     nprocs = int(sys.argv[3])
 else:
@@ -176,8 +188,6 @@ def mandel_worker(arg_list):
 
     """
 
-    global thread_progress, nprocs
-
     domain, resolution, threshold, max_iters, thread_id = arg_list
 
     x = np.linspace(domain[0], domain[1], resolution[0])
@@ -199,9 +209,11 @@ def mandel_worker(arg_list):
 
         xy_count_iters.append(x_count_iters)
 
-        # Show progress
-        thread_progress[thread_id] = int(100 * (y0 - domain[2]) / (domain[3] - domain[2]))
-        print('%3.0f%%' % (sum(thread_progress)/nprocs), end='\r')
+        # Show progress, Linux only
+        if sys.platform == 'linux':
+            global thread_progress, nprocs
+            thread_progress[thread_id] = int(100 * (y0 - domain[2]) / (domain[3] - domain[2]))
+            print('%3.0f%%' % (sum(thread_progress)/nprocs), end='\r')
 
     return np.array(xy_count_iters)
 
@@ -239,8 +251,11 @@ def mandel(domain=(-2.5, 1, -1, 1),  # x1, x2, y1, y2
 
     """
 
-    global thread_progress, nprocs
-    thread_progress = Array('i', [0] * nprocs)
+    global nprocs
+
+    if sys.platform == 'linux':
+        global thread_progress
+        thread_progress = Array('i', [0] * nprocs)
 
     # Divide domain and resolution y to run in parallel
     x1, x2, y1, y2 = domain
@@ -267,13 +282,7 @@ def mandel(domain=(-2.5, 1, -1, 1),  # x1, x2, y1, y2
         pixel_start_y = pixel_end_y + 1
 
     pool = Pool(processes=nprocs)
-
-    t0 = time.time()
     ret = pool.map(mandel_worker, chunks)
-    et = time.time() - t0
-
-    print('Update elapsed time %.3f s' % et)
-
     return np.concatenate(ret)
 
 
@@ -287,6 +296,8 @@ def update(domain):
         See `mandel`.
 
     """
+    t0 = time.time()
+
     global plotted_domain
     plotted_domain = domain
     print('Max iters: {} Domain: {:8.3g} {:8.3g} {:8.3g}'.format(current_max_iters, *domain))
@@ -294,21 +305,25 @@ def update(domain):
     plt.imshow(grid, cmap=plt.cm.RdBu, interpolation='bilinear', extent=domain)
     plt.draw()
 
+    et = time.time() - t0
+    print('Update elapsed time %.3f s' % et)
 
-fig, ax = plt.subplots()
-toggle_selector.RS = RectangleSelector(
-        ax, line_select_callback,
-        drawtype='box', useblit=True,
-        button=[1],  # react to left button only
-        minspanx=5, minspany=5,
-        spancoords='pixels',
-        interactive=True)
-fig.canvas.mpl_connect('button_press_event', onclick)
-plt.connect('key_press_event', toggle_selector)
 
-selected_domain = np.array(
-        (centrex - rangex, centrex + rangex,
-         centrey - rangey, centrey + rangey))
+if __name__ == '__main__':
+    fig, ax = plt.subplots()
+    toggle_selector.RS = RectangleSelector(
+            ax, line_select_callback,
+            drawtype='box', useblit=True,
+            button=[1],  # react to left button only
+            minspanx=5, minspany=5,
+            spancoords='pixels',
+            interactive=True)
+    fig.canvas.mpl_connect('button_press_event', onclick)
+    plt.connect('key_press_event', toggle_selector)
 
-update(selected_domain)
-plt.show()
+    selected_domain = np.array(
+            (centrex - rangex, centrex + rangex,
+             centrey - rangey, centrey + rangey))
+
+    update(selected_domain)
+    plt.show()
