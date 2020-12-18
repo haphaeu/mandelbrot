@@ -71,7 +71,7 @@ rangex, rangey = 4, 2
 # Initial max iterations for the Mandelbrot plotting algorithm.
 # The higher the more details in the plot, and slower to calculate.
 # This will be changed iteractivelly by Up- and Down-keys.
-current_max_iters = 99
+current_max_iters = 128
 
 
 if sys.platform == 'linux':
@@ -80,12 +80,14 @@ if sys.platform == 'linux':
     # Progress report only for linux since in windows it is a pain and inefficient.
     global thread_progress
 
-# `nprocs` is also shared as a constant to calculate progress.
+# `nprocs` is also shared as a constant to calculate progress in linux.
+# linux seems to do a much better job multitasking, therefore the
+# higher multiplier (benchmarked Linux in Ryzen 7 and Win10 Xeon E.)
 global nprocs
 if len(sys.argv) == 4:
     nprocs = int(sys.argv[3])
 else:
-    nprocs = 8 * cpu_count()
+    nprocs = cpu_count() * (8 if sys.platform == 'linux' else 2)
 
 
 def onclick(event):
@@ -148,7 +150,9 @@ def toggle_selector(event):
         current_max_iters *= 2
         update(plotted_domain)
     if event.key == 'down':
-        current_max_iters /= 10
+        current_max_iters /= 8
+        if current_max_iters < 1:
+            current_max_iters = 1
         update(plotted_domain)
     if event.key in ['R', 'r']:
         toggle_selector.RS.set_active(not toggle_selector.RS.active)
